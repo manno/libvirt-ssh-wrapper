@@ -1,0 +1,107 @@
+#!/usr/bin/ruby
+require 'syslog'
+require 'yaml'
+require 'rexml/document'
+
+=begin
+
+== NAME
+
+libvirt-manager
+
+== DESCRIPTION
+
+Wrapper to allow management of VMs via ssh
+
+== USAGE
+
+  ssh -4t user@host help|start|shutdown|destroy|status|vnc
+
+=end
+
+VIR_CMD = '/usr/bin/virsh'
+VIR_URI = 'qemu:///system'
+CONFIG_FILE = '/etc/libvirt/user_vm.yaml'
+NIL_PORT=5920
+VERBOSE = 1
+
+def exit_error(msg)
+  Syslog.open($0, Syslog::LOG_PID | Syslog::LOG_CONS) { |s| s.warning msg }
+  STDERR.puts(msg) if VERBOSE
+  exit 1
+end
+
+def get_vnc_port(vm)
+  # what vnc port for this vm?
+  domain = `virsh dumpxml #{vm}`
+  doc = REXML::Document.new(domain).root
+  port = ''
+  doc.elements.each('/domain/devices/graphics') { |vnc| port = vnc.attributes['port'] }
+  exit_error('no vnc port') unless (port and port.match(/^59\d\d$/))
+  return port
+end
+
+def update_authorized_keys(vm, port)
+  has_port=%r{command="sudo /usr/local/sbin/libvirt-manager (.+)",permitopen="#{@config['vnc_host']}:#{port}"}
+  has_vm=%r{command="sudo /usr/local/sbin/libvirt-manager #{vm}",permitopen="#{@config['vnc_host']}:(\d+)"}
+  result = []
+  File.open(@config['auth_file']) { |file|
+    file.each { |line|
+      if (line =~ has_vm)
+        result << <<-__END__
+command="sudo /usr/local/sbin/libvirt-manager #{vm}",permitopen="#{@config['vnc_host']}:#{port}"#{$'}
+        __END__
+      elsif (line =~ has_port)
+        result << <<-__END__
+command="sudo /usr/local/sbin/libvirt-manager #{$1}",permitopen="#{@config['vnc_host']}:#{NIL_PORT}"#{$'}
+        __END__
+      else
+        result << line
+      end
+    }
+  }
+end
+
+# we are running with uid 0
+@config = File.open(CONFIG_FILE) { |yf| YAML::load(yf) }
+
+# which user connected?
+@user = ENV['SUDO_USER'] || exit_error('invalid caller')
+@user.gsub(/[^a-z]/,'')
+@vm = ARGV[0] || exit_error('no vm')
+
+usage_help = proc {
+  puts "usage:"
+  puts "  ssh #{@user}@#{@config['server_name']} start|shutdown|destroy|status"
+  puts "  ssh -4t -L5900:#{@config['vnc_host']}:#{@vnc_port} #{@user}@#{@config['server_name']} vnc"
+  puts
+  STDOUT.flush
+}
+
+case ENV['SSH_ORIGINAL_COMMAND']
+  when /^start$/
+    system(VIR_CMD, '-c', VIR_URI, 'start', @vm)
+  when /^shutdown$/
+    system(VIR_CMD, '-c', VIR_URI, 'shutdown', @vm)
+  when /^destroy$/
+    system(VIR_CMD, '-c', VIR_URI, 'destroy', @vm)
+  when /^status$/
+    system(VIR_CMD, '-c', VIR_URI, 'dominfo', @vm)
+  when /^vnc$/
+    ENV['SSH_TTY'] || exit_error('no tty. use ssh -t')
+    @vnc_port = get_vnc_port(@vm)
+    update_authorized_keys(@vm, @vnc_port)
+    puts "usage:"
+    puts "  ssh -4t -L5900:#{@config['vnc_host']}:#{@vnc_port} #{@user}@#{@config['server_name']} vnc"
+    puts "  vinagre :0"
+    puts
+    puts "<ctrl-c> to abort tunnel"
+    STDOUT.flush
+    sleep
+  else
+    @vnc_port = get_vnc_port(@vm)
+    update_authorized_keys(@vm, @vnc_port)
+    usage_help.call if VERBOSE
+end
+
+exit 0
