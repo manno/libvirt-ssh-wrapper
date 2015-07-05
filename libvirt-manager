@@ -11,11 +11,47 @@ libvirt-manager
 
 == DESCRIPTION
 
-Wrapper to allow management of VMs via ssh
+Wrapper to allow management of single VMs via ssh
 
 == USAGE
 
   ssh -4t user@host help|start|shutdown|destroy|status|vnc
+
+== INSTALL
+
+1. create an account, add several ssh keys, adding the vm name to the command=
+
+  adduser user
+
+1b. restrict logins to rbash
+
+  chsh user /bin/rbash
+
+2. put user into group vmowner
+
+  adduser user vmowner
+
+3. visudo (clear env?)
+
+  Cmnd_Alias VMMAN = /usr/local/sbin/libvirt-manager
+  Defaults:%vmowner !env_reset
+  %vmowner ALL=NOPASSWD: VMMAN
+
+4. limit ssh key and enforce this wrapper skript, includes users vm name
+
+  command="sudo /usr/local/sbin/libvirt-manager vmname",permitopen="127.0.0.1:5901",no-X11-forwarding,no-agent-forwarding,no-pty ssh-rsa
+
+5. dynamic vnc port for every user in libvirt vm config
+
+  <graphics type='vnc' port='-1' autoport='no' keymap='en-us'/>
+
+6. create host config (/etc/libvirt/user_vm.yaml)
+
+  ---
+  vnc_host: 127.0.0.1
+  server_name: libvirt.example.com
+  auth_file: /home/vm/.ssh/authorized_keys
+
 
 =end
 
@@ -58,6 +94,11 @@ command="sudo /usr/local/sbin/libvirt-manager #{$1}",permitopen="#{@config['vnc_
       else
         result << line
       end
+    }
+  }
+  File.open(@config['auth_file'], 'w') { |file|
+    result.each { |line|
+      file.puts(line.chomp)
     }
   }
 end
